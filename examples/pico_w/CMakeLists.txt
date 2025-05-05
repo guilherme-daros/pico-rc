@@ -69,6 +69,7 @@ include_directories(${BTSTACK_ROOT}/src)
 
 target_link_libraries(${PROJECT_NAME} PUBLIC
     pico_stdlib
+    hardware_pwm
     pico_cyw43_arch_none
     pico_btstack_classic
     pico_btstack_cyw43

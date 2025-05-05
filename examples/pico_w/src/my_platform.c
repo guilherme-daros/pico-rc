@@ -1,12 +1,16 @@
 // Example file - Public Domain
 // Need help? https://tinyurl.com/bluepad32-help
 
+#include <math.h>
 #include <stddef.h>
 #include <string.h>
 
 #include <pico/cyw43_arch.h>
 #include <pico/time.h>
 #include <uni.h>
+#include "controller/uni_controller.h"
+#include "controller/uni_gamepad.h"
+#include "hardware/pwm.h"
 
 #include "sdkconfig.h"
 
@@ -26,23 +30,6 @@ static void my_platform_init(int argc, const char** argv) {
     ARG_UNUSED(argv);
 
     logi("my_platform: init()\n");
-
-#if 0
-    uni_gamepad_mappings_t mappings = GAMEPAD_DEFAULT_MAPPINGS;
-
-    // Inverted axis with inverted Y in RY.
-    mappings.axis_x = UNI_GAMEPAD_MAPPINGS_AXIS_RX;
-    mappings.axis_y = UNI_GAMEPAD_MAPPINGS_AXIS_RY;
-    mappings.axis_ry_inverted = true;
-    mappings.axis_rx = UNI_GAMEPAD_MAPPINGS_AXIS_X;
-    mappings.axis_ry = UNI_GAMEPAD_MAPPINGS_AXIS_Y;
-
-    // Invert A & B
-    mappings.button_a = UNI_GAMEPAD_MAPPINGS_BUTTON_B;
-    mappings.button_b = UNI_GAMEPAD_MAPPINGS_BUTTON_A;
-
-    uni_gamepad_set_mappings(&mappings);
-#endif
 }
 
 static void my_platform_on_init_complete(void) {
@@ -68,12 +55,6 @@ static void my_platform_on_init_complete(void) {
 }
 
 static uni_error_t my_platform_on_device_discovered(bd_addr_t addr, const char* name, uint16_t cod, uint8_t rssi) {
-    // You can filter discovered devices here. Return any value different from UNI_ERROR_SUCCESS;
-    // @param addr: the Bluetooth address
-    // @param name: could be NULL, could be zero-length, or might contain the name.
-    // @param cod: Class of Device. See "uni_bt_defines.h" for possible values.
-    // @param rssi: Received Signal Strength Indicator (RSSI) measured in dBms. The higher (255) the better.
-
     // As an example, if you want to filter out keyboards, do:
     if (((cod & UNI_BT_COD_MINOR_MASK) & UNI_BT_COD_MINOR_KEYBOARD) == UNI_BT_COD_MINOR_KEYBOARD) {
         logi("Ignoring keyboard\n");
@@ -99,74 +80,48 @@ static uni_error_t my_platform_on_device_ready(uni_hid_device_t* d) {
 }
 
 static void my_platform_on_controller_data(uni_hid_device_t* d, uni_controller_t* ctl) {
-    static uint8_t leds = 0;
-    static uint8_t enabled = true;
     static uni_controller_t prev = {0};
-    uni_gamepad_t* gp;
+    // uni_controller_dump(ctl);
+    const uint IN1 = 18;
+    const uint IN2 = 19;
+    const uint IN3 = 20;
+    const uint IN4 = 21;
 
-    // Used to prevent spamming the log, but should be removed in production.
-    //    if (memcmp(&prev, ctl, sizeof(*ctl)) == 0) {
-    //        return;
-    //    }
-    prev = *ctl;
-    // Print device Id before dumping gamepad.
-    logi("(%p) id=%d ", d, uni_hid_device_get_idx_for_instance(d));
-    uni_controller_dump(ctl);
+    const uint velA = 16;
+    const uint velB = 17;
 
-    switch (ctl->klass) {
-        case UNI_CONTROLLER_CLASS_GAMEPAD:
-            gp = &ctl->gamepad;
+    const uint intensity = 100;
 
-            // Debugging
-            // Axis ry: control rumble
-            if ((gp->buttons & BUTTON_A) && d->report_parser.play_dual_rumble != NULL) {
-                d->report_parser.play_dual_rumble(d, 0 /* delayed start ms */, 250 /* duration ms */,
-                                                  128 /* weak magnitude */, 0 /* strong magnitude */);
-            }
+    if (ctl->klass == UNI_CONTROLLER_CLASS_GAMEPAD) {
+        uni_gamepad_t* gp = &ctl->gamepad;
 
-            if ((gp->buttons & BUTTON_B) && d->report_parser.play_dual_rumble != NULL) {
-                d->report_parser.play_dual_rumble(d, 0 /* delayed start ms */, 250 /* duration ms */,
-                                                  0 /* weak magnitude */, 128 /* strong magnitude */);
-            }
-            // Buttons: Control LEDs On/Off
-            if ((gp->buttons & BUTTON_X) && d->report_parser.set_player_leds != NULL) {
-                d->report_parser.set_player_leds(d, leds++ & 0x0f);
-            }
-            // Axis: control RGB color
-            if ((gp->buttons & BUTTON_Y) && d->report_parser.set_lightbar_color != NULL) {
-                uint8_t r = (gp->axis_x * 256) / 512;
-                uint8_t g = (gp->axis_y * 256) / 512;
-                uint8_t b = (gp->axis_rx * 256) / 512;
-                d->report_parser.set_lightbar_color(d, r, g, b);
-            }
+        double X = gp->axis_x / 512.0;
 
-            // Toggle Bluetooth connections
-            if ((gp->buttons & BUTTON_SHOULDER_L) && enabled) {
-                logi("*** Disabling Bluetooth connections\n");
-                uni_bt_stop_scanning_safe();
-                enabled = false;
-            }
-            if ((gp->buttons & BUTTON_SHOULDER_R) && !enabled) {
-                logi("*** Enabling Bluetooth connections\n");
-                uni_bt_start_scanning_and_autoconnect_safe();
-                enabled = true;
-            }
-            break;
-        case UNI_CONTROLLER_CLASS_BALANCE_BOARD:
-            // Do something
-            uni_balance_board_dump(&ctl->balance_board);
-            break;
-        case UNI_CONTROLLER_CLASS_MOUSE:
-            // Do something
-            uni_mouse_dump(&ctl->mouse);
-            break;
-        case UNI_CONTROLLER_CLASS_KEYBOARD:
-            // Do something
-            uni_keyboard_dump(&ctl->keyboard);
-            break;
-        default:
-            loge("Unsupported controller class: %d\n", ctl->klass);
-            break;
+        uint slice_num = pwm_gpio_to_slice_num(16);
+        double modulo = 0;
+
+        if (gp->throttle > 0) {
+            gpio_put(IN1, 1);
+            gpio_put(IN2, 0);
+            gpio_put(IN3, 1);
+            gpio_put(IN4, 0);
+            modulo = gp->throttle / 1020.0;
+        }
+        if (gp->brake > 0) {
+            gpio_put(IN1, 0);
+            gpio_put(IN2, 1);
+            gpio_put(IN3, 0);
+            gpio_put(IN4, 1);
+            modulo = gp->brake / 1020.0;
+        }
+        loge("modulo: %f ", modulo);
+        uint pwm_value = modulo * intensity;
+        loge("pwm_value: %i ", pwm_value);
+        pwm_set_chan_level(slice_num, PWM_CHAN_A, pwm_value);
+        pwm_set_chan_level(slice_num, PWM_CHAN_B, pwm_value);
+        loge("\n");
+    } else {
+        loge("Unsupported controller class: %d\n", ctl->klass);
     }
 }
 
