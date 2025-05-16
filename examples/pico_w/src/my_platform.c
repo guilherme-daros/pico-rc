@@ -82,23 +82,24 @@ static uni_error_t my_platform_on_device_ready(uni_hid_device_t* d) {
 static void my_platform_on_controller_data(uni_hid_device_t* d, uni_controller_t* ctl) {
     static uni_controller_t prev = {0};
     // uni_controller_dump(ctl);
-    const uint IN1 = 18;
-    const uint IN2 = 19;
-    const uint IN3 = 20;
-    const uint IN4 = 21;
+    const uint IN1 = 21;
+    const uint IN2 = 20;
+    const uint IN3 = 19;
+    const uint IN4 = 18;
 
-    const uint velA = 16;
-    const uint velB = 17;
+    const uint velA = 17;
+    const uint velB = 16;
 
-    const uint intensity = 100;
+    const uint intensity = 255;
 
     if (ctl->klass == UNI_CONTROLLER_CLASS_GAMEPAD) {
         uni_gamepad_t* gp = &ctl->gamepad;
 
-        double X = gp->axis_x / 512.0;
+        float X = (gp->axis_x + 4) / 512.0;
+        loge("X: %f ", X);
 
         uint slice_num = pwm_gpio_to_slice_num(16);
-        double modulo = 0;
+        float modulo = 0;
 
         if (gp->throttle > 0) {
             gpio_put(IN1, 1);
@@ -114,11 +115,26 @@ static void my_platform_on_controller_data(uni_hid_device_t* d, uni_controller_t
             gpio_put(IN4, 1);
             modulo = gp->brake / 1020.0;
         }
+
         loge("modulo: %f ", modulo);
-        uint pwm_value = modulo * intensity;
-        loge("pwm_value: %i ", pwm_value);
-        pwm_set_chan_level(slice_num, PWM_CHAN_A, pwm_value);
-        pwm_set_chan_level(slice_num, PWM_CHAN_B, pwm_value);
+
+        uint pwm_valueA = modulo * intensity;
+        uint pwm_valueB = modulo * intensity;
+
+        if (X > 0) {
+            pwm_valueA *= (1 - fabs(X));
+        }
+
+        if (X < 0) {
+            pwm_valueB *= (1 - fabs(X));
+        }
+
+        loge("pwmA: %d ", pwm_valueA);
+        loge("pwmB: %d ", pwm_valueB);
+        loge("absX: %f ", fabs(X));
+
+        pwm_set_chan_level(slice_num, PWM_CHAN_A, pwm_valueA);
+        pwm_set_chan_level(slice_num, PWM_CHAN_B, pwm_valueB);
         loge("\n");
     } else {
         loge("Unsupported controller class: %d\n", ctl->klass);
